@@ -28,7 +28,7 @@ EVAL_FILE = 'adult.test.csv'
 TRAINING_URL = '%s/%s' % (DATA_URL, TRAINING_FILE)
 EVAL_URL = '%s/%s' % (DATA_URL, EVAL_FILE)
 
-IMG_SIZE = 32   # All images will be resized to 160x160
+MAX_IMG_SIZE = 512
 
 def _download_and_clean_file(filename, url):
     """Downloads data from url, and makes changes to match the CSV format.
@@ -75,24 +75,21 @@ def download(data_dir):
     return training_file_path, eval_file_path
 
 def extract_LMDB(filepath):
-    """ Stores LMDB labels into a dictionary
+    """ Stores LMDB labels into a dictionary. Each value of the LMDB is a dict.
+    LMDB value
+    - ingrs: list of integer ingredients (integers, 0 padded)
+    - imgs: list of dicts of img: <img_id>.jpg, url: <url>
+    - classes: integer category
+    - intrs: array of shape (N, 1024) where N is the number of instructions and 
+    there are 1024 float values for each component
+
     Args: 
     - file path to .mdb and .lock files
 
     Returns:
     - dict of img id, outcomes of interest
     """
-    # LMDB data specs
-    # print(sample.keys()) # the keys are 'ingrs', 'imgs', 'classes', 'intrs'
-    # print(sample['ingrs'])
-    # print(sample['imgs']) # list of dictionaries where one dictionary corresponds to one picture (url -> url and id -> id)
-    # print(sample['classes']) # this is one integer value
-    # print(sample['intrs'].shape) # shape is going to be (N, 1024) where N is the number of instructions and there are 1024 float values for each component
-
-    # cur_path = sys.path[-1]
-    # # lmdb_path = 'datasets/val_lmdb/'
-    # lmdb_path = 'datasets/test_lmdb/'
-
+    
     lmdb_env = lmdb.open(filepath, max_readers=1, readonly=True, lock=False,
                                  readahead=False, meminit=False)
     lmdb_txn = lmdb_env.begin(write=False)
@@ -113,8 +110,6 @@ def extract_LMDB(filepath):
         # Store labels by img id
         for img in sample['imgs']:
           data_dict[img['id']] = [ingrs, category, num_intrs]
-        print(data_dict)
-        break
 
         # Print progress    
         ctr += 1
@@ -122,39 +117,56 @@ def extract_LMDB(filepath):
           print("# images saved: ", ctr)
           print("Time taken (min): ", (time.time()-start_time) / 60)
         
-    print(len(list(data_dict)))
     return data_dict
 
 def get_label(file_path, data_dict):
-    """Return the ingredients label using the image id extracted from file path name"""
+    """Return the ingredients label using the image id extracted 
+    from file path name
+    
+    Args:
+    - file path to image in directory
+    - TF Static Hash Table mapping <img_id>.jpeg to extracted labels
 
-    parts = tf.strings.split(file_path, os.path.sep) # list of path components
-    return data_dict.lookup(parts[-1]) # the last path component is the image id (and dict key)
-
-    # Failed attempts to extract string value from file_path tensor
-    # print(parts[tf.newaxis, -1])
-    # print(tf.constant(parts[tf.newaxis, -1]))
-    # print(tf.make_tensor_proto(parts[0,-1]))
-    # tf.make_ndarray(parts.op.get_attr('values'))
-    # parts = parts.numpy()
+    Returns:
+    - label(s) 
+    """
+    # list out path components
+    parts = tf.strings.split(file_path, os.path.sep) 
+    return data_dict.lookup(parts[-1]) # last component is the image id
 
 def decode_img(img):
-    """Return 3D image tensor using dimensions from get_image_size"""
+    """Return 3D image tensor cast to float and shrunk (if necc.)
+    
+    """
     img = tf.image.decode_jpeg(img, channels=3) # converts to 3D uint8 tensor
-    # img = tf.cast(image, tf.float32)
-    img = tf.image.convert_image_dtype(img, tf.float32) # converts pixels to [0,1] range
-    # img = (image/127.5) - 1 # normalize
-    # tf.image.resize(img, [IMG_WIDTH, IMG_HEIGHT]) # optional resize
+    img = tf.image.convert_image_dtype(img, tf.float32) # scales down pixels to [0,1] range
+
+    # Shrink image keeping aspect ratio if a dimension exceeds MAX_IMG_SIZE
+    img_w = tf.cast(tf.shape(img)[0], dtype=tf.float32)
+    img_h = tf.cast(tf.shape(img)[1], dtype=tf.float32)
+    if img_w >= img_h:
+        if img_w > MAX_IMG_SIZE: # when width the largest dim and too large  
+            shrink = MAX_IMG_SIZE / img_w
+            new_w = MAX_IMG_SIZE
+            new_h = tf.math.floor(img_h * shrink)
+            img = tf.image.resize(img, (new_w, new_h))
+    else:
+        if img_h > MAX_IMG_SIZE: # when height the largest dim and too large
+            shrink = MAX_IMG_SIZE / img_h
+            new_w = tf.math.floor(img_w * shrink)
+            new_h = MAX_IMG_SIZE
+            img = tf.image.resize(img, (new_w, new_h))
+
     return img
 
 def process_path(file_path, data_dict):
-    """Return image and label as tensors"""
+    """Return image and label as tensors
+
+    """
     label = get_label(file_path, data_dict)
     img = tf.io.read_file(file_path) # load the raw data from the file as a string
     img = decode_img(img)
     return img, label
-
-    # w, h = gis.get_image_size(file_path)
 
 def load_data():
     """Loads data into preprocessed (train_x, train_y, eval_y, eval_y)
