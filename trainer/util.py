@@ -13,8 +13,11 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.utils import to_categorical
 
+import time
+import lmdb
+
 # Storage directory
-DATA_DIR = os.path.join(tempfile.gettempdir(), 'census_data')
+DATA_DIR = os.path.join(tempfile.gettempdir(), 'local_subset')
 
 # Download options.
 DATA_URL = (
@@ -71,13 +74,90 @@ def download(data_dir):
 
     return training_file_path, eval_file_path
 
+def extract_LMDB(filepath):
+    """ Stores LMDB labels into a dictionary
+    Args: 
+    - file path to .mdb and .lock files
+
+    Returns:
+    - dict of img id, outcomes of interest
+    """
+    # LMDB data specs
+    # print(sample.keys()) # the keys are 'ingrs', 'imgs', 'classes', 'intrs'
+    # print(sample['ingrs'])
+    # print(sample['imgs']) # list of dictionaries where one dictionary corresponds to one picture (url -> url and id -> id)
+    # print(sample['classes']) # this is one integer value
+    # print(sample['intrs'].shape) # shape is going to be (N, 1024) where N is the number of instructions and there are 1024 float values for each component
+
+    # cur_path = sys.path[-1]
+    # # lmdb_path = 'datasets/val_lmdb/'
+    # lmdb_path = 'datasets/test_lmdb/'
+
+    lmdb_env = lmdb.open(filepath, max_readers=1, readonly=True, lock=False,
+                                 readahead=False, meminit=False)
+    lmdb_txn = lmdb_env.begin(write=False)
+    lmdb_cursor = lmdb_txn.cursor()
+
+    data_dict = {}
+    ctr = 0
+
+    start_time = time.time()
+    for key, value in lmdb_cursor:
+        sample = pickle.loads(value,encoding='latin1')
+        
+        # Extract labels
+        num_intrs = sample['intrs'].shape[0]
+        category = sample['classes']
+        ingrs = sample['ingrs']
+
+        # Store labels by img id
+        for img in sample['imgs']:
+          data_dict[img['id']] = [ingrs, category, num_intrs]
+        print(data_dict)
+        break
+
+        # Print progress    
+        ctr += 1
+        if ctr % 10000 == 0:
+          print("# images saved: ", ctr)
+          print("Time taken (min): ", (time.time()-start_time) / 60)
+        
+    print(len(list(data_dict)))
+    return data_dict
+
+def get_label(file_path, data_dict):
+    """Return the ingredients label using the image id extracted from file path name"""
+
+    parts = tf.strings.split(file_path, os.path.sep) # list of path components # os.path.sep
+    print(os.path.sep)
+    print(parts)
+    # parts = parts.numpy()
+    # index = file_path.rsplit('/', 1)[-1] # parts[-1].decode('ascii')
+    return data_dict[parts[-1]] # the last path component is the image id (and dict key)
+
+def decode_img(img):
+    """Return 3D image tensor using dimensions from get_image_size"""
+    img = tf.image.decode_jpeg(img, channels=3) # converts to 3D uint8 tensor
+    img = tf.image.convert_image_dtype(img, tf.float32) # converts pixels to [0,1] range
+    # tf.image.resize(img, [IMG_WIDTH, IMG_HEIGHT]) # optional resize
+    return img
+
+def process_path(file_path, data_dict):
+    """Return image and label as tensors"""
+    print(file_path)
+    # tf.print(file_path)
+    label = get_label(file_path, data_dict)
+    img = tf.io.read_file(file_path) # load the raw data from the file as a string
+    # w, h = gis.get_image_size(file_path) # TODO: Make file_path into string
+    img = decode_img(img)
+    return img, label
 
 def preprocess(image, label):
-      image = tf.cast(image, tf.float32)
-      image = (image/127.5) - 1
-      image = tf.image.resize(image, (IMG_SIZE, IMG_SIZE))
-      # label = tf.one_hot(label, depth=10) # TODO: make num_classes an ARG, one hot encode
-      return image, label # tf.reshape(label, (-1, 1))
+    image = tf.cast(image, tf.float32)
+    image = (image/127.5) - 1
+    image = tf.image.resize(image, (IMG_SIZE, IMG_SIZE))
+    # label = tf.one_hot(label, depth=10) # TODO: make num_classes an ARG, one hot encode
+    return image, label # tf.reshape(label, (-1, 1))
 
 
 def standardize(dataframe):
@@ -109,37 +189,6 @@ def load_data():
       Pandas dataframes with features for training and train_y and eval_y are
       numpy arrays with the corresponding labels.
     """
-    # # Download Census dataset: Training and eval csv files.
-    # training_file_path, eval_file_path = download(DATA_DIR)
-
-    # # This census data uses the value '?' for missing entries. We use
-    # # na_values to
-    # # find ? and set it to NaN.
-    # # https://pandas.pydata.org/pandas-docs/stable/generated/pandas.read_csv
-    # # .html
-    # train_df = pd.read_csv(training_file_path, names=_CSV_COLUMNS,
-    #                        na_values='?')
-    # eval_df = pd.read_csv(eval_file_path, names=_CSV_COLUMNS, na_values='?')
-
-    # train_df = preprocess(train_df)
-    # eval_df = preprocess(eval_df)
-
-    # # Split train and eval data with labels. The pop method copies and removes
-    # # the label column from the dataframe.
-    # train_x, train_y = train_df, train_df.pop(_LABEL_COLUMN)
-    # eval_x, eval_y = eval_df, eval_df.pop(_LABEL_COLUMN)
-
-    # # Join train_x and eval_x to normalize on overall means and standard
-    # # deviations. Then separate them again.
-    # all_x = pd.concat([train_x, eval_x], keys=['train', 'eval'])
-    # all_x = standardize(all_x)
-    # train_x, eval_x = all_x.xs('train'), all_x.xs('eval')
-
-    # # Reshape label columns for use with tf.data.Dataset
-    # train_y = np.asarray(train_y).astype('float32').reshape((-1, 1))
-    # eval_y = np.asarray(eval_y).astype('float32').reshape((-1, 1))
-
-    
 
     # Download CIFAR 10 dataset
     (train_x, train_y), (test_x, test_y) = tf.keras.datasets.cifar10.load_data()
@@ -160,62 +209,3 @@ def load_data():
 
     return dataset_tr, dataset_te # train_x, train_y, eval_x, eval_y
 
-# # These are the features in the dataset.
-# # Dataset information: https://archive.ics.uci.edu/ml/datasets/census+income
-# _CSV_COLUMNS = [
-#     'age', 'workclass', 'fnlwgt', 'education', 'education_num',
-#     'marital_status', 'occupation', 'relationship', 'race', 'gender',
-#     'capital_gain', 'capital_loss', 'hours_per_week', 'native_country',
-#     'income_bracket'
-# ]
-
-# # This is the label (target) we want to predict.
-# _LABEL_COLUMN = 'income_bracket'
-
-# # These are columns we will not use as features for training. There are many
-# # reasons not to use certain attributes of data for training. Perhaps their
-# # values are noisy or inconsistent, or perhaps they encode bias that we do not
-# # want our model to learn. For a deep dive into the features of this Census
-# # dataset and the challenges they pose, see the Introduction to ML Fairness
-# # Notebook: https://colab.research.google.com/github/google/eng-edu/blob
-# # /master/ml/cc/exercises/intro_to_fairness.ipynb
-# UNUSED_COLUMNS = ['fnlwgt', 'education', 'gender']
-
-# _CATEGORICAL_TYPES = {
-#     'workclass': pd.api.types.CategoricalDtype(categories=[
-#         'Federal-gov', 'Local-gov', 'Never-worked', 'Private', 'Self-emp-inc',
-#         'Self-emp-not-inc', 'State-gov', 'Without-pay'
-#     ]),
-#     'marital_status': pd.api.types.CategoricalDtype(categories=[
-#         'Divorced', 'Married-AF-spouse', 'Married-civ-spouse',
-#         'Married-spouse-absent', 'Never-married', 'Separated', 'Widowed'
-#     ]),
-#     'occupation': pd.api.types.CategoricalDtype([
-#         'Adm-clerical', 'Armed-Forces', 'Craft-repair', 'Exec-managerial',
-#         'Farming-fishing', 'Handlers-cleaners', 'Machine-op-inspct',
-#         'Other-service', 'Priv-house-serv', 'Prof-specialty', 'Protective-serv',
-#         'Sales', 'Tech-support', 'Transport-moving'
-#     ]),
-#     'relationship': pd.api.types.CategoricalDtype(categories=[
-#         'Husband', 'Not-in-family', 'Other-relative', 'Own-child', 'Unmarried',
-#         'Wife'
-#     ]),
-#     'race': pd.api.types.CategoricalDtype(categories=[
-#         'Amer-Indian-Eskimo', 'Asian-Pac-Islander', 'Black', 'Other', 'White'
-#     ]),
-#     'native_country': pd.api.types.CategoricalDtype(categories=[
-#         'Cambodia', 'Canada', 'China', 'Columbia', 'Cuba', 'Dominican-Republic',
-#         'Ecuador', 'El-Salvador', 'England', 'France', 'Germany', 'Greece',
-#         'Guatemala', 'Haiti', 'Holand-Netherlands', 'Honduras', 'Hong',
-#         'Hungary',
-#         'India', 'Iran', 'Ireland', 'Italy', 'Jamaica', 'Japan', 'Laos',
-#         'Mexico',
-#         'Nicaragua', 'Outlying-US(Guam-USVI-etc)', 'Peru', 'Philippines',
-#         'Poland',
-#         'Portugal', 'Puerto-Rico', 'Scotland', 'South', 'Taiwan', 'Thailand',
-#         'Trinadad&Tobago', 'United-States', 'Vietnam', 'Yugoslavia'
-#     ]),
-#     'income_bracket': pd.api.types.CategoricalDtype(categories=[
-#         '<=50K', '>50K'
-#     ])
-# }
