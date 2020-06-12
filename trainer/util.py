@@ -128,57 +128,33 @@ def extract_LMDB(filepath):
 def get_label(file_path, data_dict):
     """Return the ingredients label using the image id extracted from file path name"""
 
-    parts = tf.strings.split(file_path, os.path.sep) # list of path components # os.path.sep
-    print(os.path.sep)
-    print(parts)
+    parts = tf.strings.split(file_path, os.path.sep) # list of path components
+    return data_dict.lookup(parts[-1]) # the last path component is the image id (and dict key)
+
+    # Failed attempts to extract string value from file_path tensor
+    # print(parts[tf.newaxis, -1])
+    # print(tf.constant(parts[tf.newaxis, -1]))
+    # print(tf.make_tensor_proto(parts[0,-1]))
+    # tf.make_ndarray(parts.op.get_attr('values'))
     # parts = parts.numpy()
-    # index = file_path.rsplit('/', 1)[-1] # parts[-1].decode('ascii')
-    return data_dict[parts[-1]] # the last path component is the image id (and dict key)
 
 def decode_img(img):
     """Return 3D image tensor using dimensions from get_image_size"""
     img = tf.image.decode_jpeg(img, channels=3) # converts to 3D uint8 tensor
+    # img = tf.cast(image, tf.float32)
     img = tf.image.convert_image_dtype(img, tf.float32) # converts pixels to [0,1] range
+    # img = (image/127.5) - 1 # normalize
     # tf.image.resize(img, [IMG_WIDTH, IMG_HEIGHT]) # optional resize
     return img
 
 def process_path(file_path, data_dict):
     """Return image and label as tensors"""
-    print(file_path)
-    # tf.print(file_path)
     label = get_label(file_path, data_dict)
     img = tf.io.read_file(file_path) # load the raw data from the file as a string
-    # w, h = gis.get_image_size(file_path) # TODO: Make file_path into string
     img = decode_img(img)
     return img, label
 
-def preprocess(image, label):
-    image = tf.cast(image, tf.float32)
-    image = (image/127.5) - 1
-    image = tf.image.resize(image, (IMG_SIZE, IMG_SIZE))
-    # label = tf.one_hot(label, depth=10) # TODO: make num_classes an ARG, one hot encode
-    return image, label # tf.reshape(label, (-1, 1))
-
-
-def standardize(dataframe):
-    """Scales numerical columns using their means and standard deviation to get
-    z-scores: the mean of each numerical column becomes 0, and the standard
-    deviation becomes 1. This can help the model converge during training.
-
-    Args:
-      dataframe: Pandas dataframe
-
-    Returns:
-      Input dataframe with the numerical columns scaled to z-scores
-    """
-    dtypes = list(zip(dataframe.dtypes.index, map(str, dataframe.dtypes)))
-    # Normalize numeric columns.
-    for column, dtype in dtypes:
-        if dtype == 'float32':
-            dataframe[column] -= dataframe[column].mean()
-            dataframe[column] /= dataframe[column].std()
-    return dataframe
-
+    # w, h = gis.get_image_size(file_path)
 
 def load_data():
     """Loads data into preprocessed (train_x, train_y, eval_y, eval_y)
