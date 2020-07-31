@@ -5,6 +5,7 @@ from __future__ import division
 from __future__ import print_function
 
 import tensorflow as tf
+from sklearn.metrics import accuracy_score, f1_score, hamming_loss, precision_score, recall_score, multilabel_confusion_matrix
 
 
 def input_fn(dataset, shuffle, num_epochs, batch_size):
@@ -40,19 +41,30 @@ def input_fn(dataset, shuffle, num_epochs, batch_size):
     dataset = dataset.batch(batch_size)
     return dataset
 
+def eval_as_np(fn, y_true, y_pred):
+    return tf.numpy_function(fn, [y_true, tf.round(y_pred)], tf.double)
+
+def accuracy_ml(y_true, y_pred):
+  return eval_as_np(accuracy_score, y_true, y_pred)
+
+def f1_score_macro(y_true, y_pred):
+  return f1_score(y_true, y_pred, average='macro')
+
+def f1_ml(y_true, y_pred):
+  return eval_as_np(f1_score_macro, y_true, y_pred)
+
+def hamming_ml(y_true, y_pred):
+  return eval_as_np(hamming_loss, y_true, y_pred)
+
+def prec_ml(y_true, y_pred):
+  return eval_as_np(precision_score, y_true, y_pred)
+
+def recall_ml(y_true, y_pred):
+  return eval_as_np(recall_score, y_true, y_pred)
 
 def create_keras_model(input_shape, learning_rate):
-    """Creates Keras Model for Multi-Class Classification.
-
-    The single output node + Sigmoid activation makes this a Logistic
-    Regression.
-
-    Args:
-      input_shape: How many features the input has
-      learning_rate: Learning rate for training
-
-    Returns:
-      The compiled Keras model (still needs to be trained)
+    """
+    Returns Keras model for single class prediction with MobileNetV2 architecture 
     """
 
     keras_mobilenet_v2 = tf.keras.applications.MobileNetV2(
@@ -62,16 +74,14 @@ def create_keras_model(input_shape, learning_rate):
     model = tf.keras.Sequential([
         keras_mobilenet_v2,
         tf.keras.layers.GlobalAveragePooling2D(),
-        tf.keras.layers.Dense(10, activation='softmax')
+        tf.keras.layers.Dense(1048, activation='softmax')
     ])
 
-    # Custom Optimizer:
-    # https://www.tensorflow.org/api_docs/python/tf/train/RMSPropOptimizer
     optimizer = tf.keras.optimizers.RMSprop(lr=learning_rate)
+    metrics = [accuracy_ml] # TODO: determine which single metric to optimize, f1, hamming, etc.
 
-    # Compile the model
     model.compile(
         optimizer=optimizer,
-        loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
-        metrics=['accuracy'])
+        loss=tf.keras.losses.BinaryCrossentropy(from_logits=True), # logit input is [0, 1]
+        metrics=metrics)
     return model
