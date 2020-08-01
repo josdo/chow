@@ -15,48 +15,19 @@ import lmdb
 import pickle
 from collections import defaultdict
 
-### Process Raw Data
+### Process Raw Labels
 
-def get_valid_paths(img_dir, raw_ds):
+def get_valid_ids(img_dir, raw_ds):
     """ 
     Returns all paths to images with valid labels within the image directory.
     """
 
     valid_ids = list(raw_ds)
-    paths = [p.as_posix() for p in img_dir.rglob('*.jpg')]
-    print("# original images: ", len(paths))
-    paths = [p for p in paths if p.split('/')[-1] in valid_ids]
-    print("# valid labeled images: ", len(paths))
-    return paths
-
-def resize_img(img, fixed_size):
-    """
-    Scale and pad the image to square of fixed size.
-    """
-    w = img.shape[0]
-    h = img.shape[1]
-    scale = fixed_size / max(w,h)
-    
-    seq = iaa.Sequential([
-        iaa.Resize(float(scale)),
-        iaa.CenterPadToFixedSize(height=fixed_size, width=fixed_size)
-    ])
-    img = seq(image=img)    
-    return img
-
-def process_path(path, raw_ds):
-    """
-    Return image dataset with raw labels from valid image paths.
-    """
-
-    # Get Label
-    key = path.split('/')[-1]
-    ingr_ids, class_id, nsteps = raw_ds[key]
-    
-    # Get image with max dim of 512
-    img = imageio.imread(path)
-    img = resize_img(img, 512)
-    return img, ingr_ids, class_id, nsteps
+    dir_ids = [p.as_posix().split('/')[-1] for p in img_dir.rglob('*.jpg')]
+    print("# original images: ", len(dir_ids))
+    dir_ids = [i for i in dir_ids if i in valid_ids]
+    print("# valid labeled images: ", len(dir_ids))
+    return dir_ids
 
 def encode_class(class_ids, id2class):
     """
@@ -126,7 +97,7 @@ def encode_ingrs(ingr_ids_list, rid2iid):
 
 ### Read LMDB into raw labels dataset
 
-def get_labels_dict(file_path):
+def read_lmdb(file_path):
     """ 
     Stores LMDB labels into a dictionary. Each value of the LMDB is a dict.
     - ingrs: list of integer ingredients (integers, 0 padded)
@@ -190,22 +161,20 @@ def load_data():
     CLASS_PATH = DATA_DIR / "classes1M.pkl"
     RVOCAB_PATH = DATA_DIR / "vocab.txt"
 
-    # Extract image id : raw labels dictionary
-    # TODO: include LMDB extraction and test that util fn
-    if ID_DS_TRAIN_PATH.exists():
-        id_ds_tr = pickle.load(open(ID_DS_TRAIN_PATH.as_posix(), 'rb'))
-    else:
+    # Read in dict of image id : raw labels
+    if not ID_DS_TRAIN_PATH.exists():
         print("Error: this raw dataset does not exist. Try extracting from the LMDB.")
         return
     
-    # Get images (resized) and raw labels
-    path_ds = get_valid_paths(IMG_DIR, id_ds_tr)
+    id2raw_labels_tr = pickle.load(open(ID_DS_TRAIN_PATH.as_posix(), 'rb'))
+    # id2raw_labels_val = 
+    # id2raw_labels_te =
     
-    raw_ds = map(lambda p: process_path(p, id_ds_tr), path_ds)
-    raw_ds = np.array(list(raw_ds))
-    imgs, ingr_ids, class_ids, nsteps = raw_ds[:,0], raw_ds[:,1], raw_ds[:,2], raw_ds[:,3]
-    imgs = np.stack(imgs).astype(np.int32) # convert each image from object type
-    
+    img_ids = get_valid_ids(IMG_DIR, id2raw_labels_tr)
+
+    raw_labels = np.array([id2raw_labels_tr[i] for i in img_ids])
+    ingr_ids, class_ids, nsteps = raw_labels[:,0], raw_labels[:,1], raw_labels[:,2]
+
     # Build class id dictionary
     with open(CLASS_PATH, 'rb') as f:
         imid2clid = pickle.load(f) # image_id to class_id dict
@@ -221,9 +190,9 @@ def load_data():
     rvocab2id = {v:k for k,v in id2rvocab.items()}
     
     invalid_ingr_names = ['Ingredients', '1', '100', '2', '200', '23', '30', '300', \
-                   '4', '450', '50', '500', '6', '600']
+                          '4', '450', '50', '500', '6', '600']
     invalid_ids = [rvocab2id[n] for n in invalid_ingr_names]
-    id_ds_list = [id_ds_tr] # TODO: add id_ds_tr, import in up top
+    id_ds_list = [id2raw_labels_tr] # TODO: add id_ds_tr, import in up top
     unique_ids = find_unique_ingr_ids(id_ds_list, invalid_ids)
     id2ingr, rid2iid = build_ingr_id_dict(unique_ids, id2rvocab)
     print("# unique ingredients:", len(list(id2ingr)))
@@ -231,8 +200,18 @@ def load_data():
     # One hot encode ingr ids
     ingr_labels = encode_ingrs(ingr_ids, rid2iid)
     
-    # TODO: Split train and val sets
-    return imgs, ingr_labels, class_labels, nsteps, id2class
+    # Create new labels dictionary
+    id2labels_tr = dict(zip(img_ids, zip(ingr_labels, class_labels, nsteps)))
+    # id2labels_val = 
+    # id2labels_te = 
+
+    # Create new image id dictionary
+    partition = {
+        'train': img_ids[:18], 
+        'validation': img_ids[18:]
+    }
+
+    return partition, id2labels_tr, id2class
 
 
 
