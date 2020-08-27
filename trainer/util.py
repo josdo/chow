@@ -1,4 +1,4 @@
-"""Helper functions for preprocessing."""
+"""Pipeline reading and preprocessing data from the original files."""
 
 import numpy as np
 import pandas as pd
@@ -17,17 +17,38 @@ from collections import defaultdict
 
 ### Process Raw Labels
 
-def get_valid_ids(img_dir, raw_ds):
+def get_valid_ids(img_dir, raw_ds, other_ds=[], subdirect=False):
     """ 
     Returns all paths to images with valid labels within the image directory.
     """
-
+    # Find all labeled ids
     valid_ids = list(raw_ds)
-    dir_ids = [p.as_posix().split('/')[-1] for p in img_dir.rglob('*.jpg')]
-    print("# original images: ", len(dir_ids))
-    dir_ids = [i for i in dir_ids if i in valid_ids]
-    print("# valid labeled images: ", len(dir_ids))
-    return dir_ids
+    start_time = time.time()
+
+    # Find all ids from the directory
+    if subdirect:
+        subdir = "/a/a/a"
+        print("Collecting all image paths in subdir {} of {}".format(subdir, img_dir))
+        dir_paths = pathlib.Path(img_dir+subdir).rglob("*.jpg")
+    else:
+        print("Collecting all image paths in", img_dir)
+        dir_paths = pathlib.Path(img_dir).rglob("*.jpg")
+    
+    dir_ids = [p.as_posix().split('/')[-1] for p in dir_paths]
+    print("Collecting completed in {:.2f} minutes".format((time.time()-start_time)/60))
+
+    # Check if directory ids belong to current partition
+    print("{} original images".format(len(dir_ids)))
+    valid_dir_ids = [i for i in dir_ids if i in valid_ids]
+    print("{} usable labeled images".format(len(valid_dir_ids)))
+
+    # Check if directory ids belong to current partition (for debugging)
+    if len(other_ds) > 0:
+        for ds in other_ds:
+            other_dir_ids = [i for i in dir_ids if i in list(ds)]
+            print("{} images labeled for another partition".format(len(other_dir_ids)))
+
+    return valid_dir_ids
 
 def encode_class(class_ids, id2class):
     """
@@ -63,14 +84,17 @@ def find_unique_ingr_ids(raw_ds_list, invalid_ids):
     unique_ids = np.array(list(unique_ids))
     return unique_ids
 
+def dd(): # named function required for the default dict to be pickled later
+    return -1
+
 def build_ingr_id_dict(ingr_ids, id2rvocab):
     """
     Assign a new id to each unique ingredient. Returns a new id to ingredient dict
     and an old id (rid) to new id (iid) dict. 
     """
 
-    id2ingr = defaultdict(lambda:-1) # this default value allows for invalid key checking
-    rid2iid = defaultdict(lambda:-1)
+    id2ingr = defaultdict(dd) # this default value allows for invalid key checking
+    rid2iid = defaultdict(dd)
     for iid, rid in enumerate(ingr_ids):
         ingr_word = id2rvocab[rid]
         id2ingr[iid] = ingr_word
@@ -97,7 +121,7 @@ def encode_ingrs(ingr_ids_list, rid2iid):
 
 ### Read LMDB into raw labels dataset
 
-def read_lmdb(file_path):
+def read_lmdb(lmdb_path):
     """ 
     Stores LMDB labels into a dictionary. Each value of the LMDB is a dict.
     - ingrs: list of integer ingredients (integers, 0 padded)
@@ -113,7 +137,7 @@ def read_lmdb(file_path):
     - dict of img id, outcomes of interest
     """
     
-    lmdb_env = lmdb.open(file_path, max_readers=1, readonly=True, lock=False,
+    lmdb_env = lmdb.open(lmdb_path, max_readers=1, readonly=True, lock=False,
                                  readahead=False, meminit=False)
     lmdb_txn = lmdb_env.begin(write=False)
     lmdb_cursor = lmdb_txn.cursor()
@@ -121,6 +145,7 @@ def read_lmdb(file_path):
     data_dict = {}
     ctr = 0
 
+    print("Reading LMDB at ", lmdb_path)
     start_time = time.time()
     for key, value in lmdb_cursor:
         sample = pickle.loads(value,encoding='latin1')
@@ -146,37 +171,44 @@ def read_lmdb(file_path):
 
 ### Main function for processing and loading data
 
-def load_data():
+def load_data(dirs, files):
     """
-    Processes and returns all splits of data from the prespecified LMDB and directories.
-
-    TODO: incorp 2 other splits
-    TODO: can memory handle this? try on colab. maybe import sooner into tf dataset.
+    TODO: add test partition, details in code
+    Processes and returns all splits of data from the prespecified data directories.
     """
 
-    # Specify directories
-    DATA_DIR = pathlib.Path(sys.path[0]).parents[0] / "data"
-    IMG_DIR = DATA_DIR / "local_subset" 
-    ID_DS_TRAIN_PATH = DATA_DIR / "data_dict_val.pkl"
-    CLASS_PATH = DATA_DIR / "classes1M.pkl"
-    RVOCAB_PATH = DATA_DIR / "vocab.txt"
+    # Specify data directories
+    img_dir_tr, img_dir_val = dirs['imgs_val'], dirs['imgs_test']
+    lmdb_tr_out_path, lmdb_val_out_path = files['val_pkl'], files['test_pkl']
+    class_dict_path = files['classes_pkl']
+    recipe_vocab_path = files['rvocab_pkl']
 
-    # Read in dict of image id : raw labels
-    if not ID_DS_TRAIN_PATH.exists():
-        print("Error: this raw dataset does not exist. Try extracting from the LMDB.")
+    # Read in dict of raw labels
+    if not (os.path.isfile(lmdb_tr_out_path) and os.path.isfile(lmdb_val_out_path)):
+        print("Error: one of the LMDB output files does not exist. Try re-reading the LMDBs.")
         return
     
-    id2raw_labels_tr = pickle.load(open(ID_DS_TRAIN_PATH.as_posix(), 'rb'))
-    # id2raw_labels_val = 
-    # id2raw_labels_te =
+    id2raw_labels_tr = pickle.load(open(lmdb_tr_out_path, 'rb'))
+    id2raw_labels_val = pickle.load(open(lmdb_val_out_path, 'rb'))
     
-    img_ids = get_valid_ids(IMG_DIR, id2raw_labels_tr)
+    # TODO: clear subdirect arg, other ds search
+    img_ids_tr = get_valid_ids(img_dir_tr, id2raw_labels_tr, [id2raw_labels_val], subdirect=True)
+    img_ids_val = get_valid_ids(img_dir_val, id2raw_labels_val, [id2raw_labels_tr], subdirect=True)
 
-    raw_labels = np.array([id2raw_labels_tr[i] for i in img_ids])
+    raw_labels_tr = np.array([id2raw_labels_tr[i] for i in img_ids_tr])
+    raw_labels_val = np.array([id2raw_labels_val[i] for i in img_ids_val])
+    
+    # Combine ids and labels from separate partitions
+    img_ids = np.concatenate([img_ids_tr, img_ids_val])
+    raw_labels = np.concatenate([raw_labels_tr, raw_labels_val])
+
+    # TODO: ^^ add test partition + \/ add id2raw_labels_te to id_ds_list
+
+    # Separate raw labels by type
     ingr_ids, class_ids, nsteps = raw_labels[:,0], raw_labels[:,1], raw_labels[:,2]
 
     # Build class id dictionary
-    with open(CLASS_PATH, 'rb') as f:
+    with open(class_dict_path, 'rb') as f:
         imid2clid = pickle.load(f) # image_id to class_id dict
         id2class = pickle.load(f) # class_id to class_name dict
     
@@ -184,7 +216,7 @@ def load_data():
     class_labels = encode_class(class_ids, id2class)
     
     # Build ingr id dictionary
-    with open(RVOCAB_PATH) as f_vocab:
+    with open(recipe_vocab_path) as f_vocab:
         id2rvocab = {i+2: w.rstrip() for i, w in enumerate(f_vocab)}
         id2rvocab[1] = '</i>'
     rvocab2id = {v:k for k,v in id2rvocab.items()}
@@ -192,7 +224,7 @@ def load_data():
     invalid_ingr_names = ['Ingredients', '1', '100', '2', '200', '23', '30', '300', \
                           '4', '450', '50', '500', '6', '600']
     invalid_ids = [rvocab2id[n] for n in invalid_ingr_names]
-    id_ds_list = [id2raw_labels_tr] # TODO: add id_ds_tr, import in up top
+    id_ds_list = [id2raw_labels_tr, id2raw_labels_val] # TODO: add test ids dict
     unique_ids = find_unique_ingr_ids(id_ds_list, invalid_ids)
     id2ingr, rid2iid = build_ingr_id_dict(unique_ids, id2rvocab)
     print("# unique ingredients:", len(list(id2ingr)))
@@ -201,17 +233,15 @@ def load_data():
     ingr_labels = encode_ingrs(ingr_ids, rid2iid)
     
     # Create new labels dictionary
-    id2labels_tr = dict(zip(img_ids, zip(ingr_labels, class_labels, nsteps)))
-    # id2labels_val = 
-    # id2labels_te = 
-
+    labels = dict(zip(img_ids, zip(ingr_labels, class_labels, nsteps)))
+   
     # Create new image id dictionary
     partition = {
-        'train': img_ids[:18], 
-        'validation': img_ids[18:]
+        'train': img_ids_tr, 
+        'validation': img_ids_val
     }
 
-    return partition, id2labels_tr, id2class
+    return partition, labels, id2ingr
 
 
 

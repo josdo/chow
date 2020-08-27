@@ -1,4 +1,4 @@
-"""Trains a TensorFlow Keras model to predict food descriptors from an image."""
+"""Command line training of the Keras models."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -60,61 +60,13 @@ def train_and_evaluate(args):
     Args:
       args: dictionary of arguments - see get_args() for details
     """
+    # TODO: when convenient, migrate over model_training notebook
 
-    dataset_tr, dataset_te = util.load_data()
+    pass
 
-    # dimensions
-    num_train_examples = dataset_tr.reduce(np.int64(0), lambda x, _: x + 1)
-    num_eval_examples = dataset_te.reduce(np.int64(0), lambda x, _: x + 1)
-
-    # num_train_examples, input_dim = tf.shape(dataset_tr).numpy()[0,]
-    # num_eval_examples = tf.shape(dataset_te).numpy()[0,0]
-
-    args.batch_size = np.int64(args.batch_size)
-
-
-    INPUT_SHAPE = (160, 160, 3)
-    # Create the Keras Model
-    keras_model = model.create_keras_model(
-        input_shape=INPUT_SHAPE, learning_rate=args.learning_rate)
-
-    # Pass a numpy array by passing DataFrame.values
-    training_dataset = model.input_fn(
-        dataset=dataset_tr,
-        shuffle=True,
-        num_epochs=args.num_epochs,
-        batch_size=args.batch_size)
-
-    # Pass a numpy array by passing DataFrame.values
-    validation_dataset = model.input_fn(
-        dataset=dataset_te,
-        shuffle=False,
-        num_epochs=args.num_epochs,
-        batch_size=num_eval_examples)
-
-    # Setup Learning Rate decay.
-    lr_decay_cb = tf.keras.callbacks.LearningRateScheduler(
-        lambda epoch: args.learning_rate + 0.02 * (0.5 ** (1 + epoch)),
-        verbose=True)
-
-    # Setup TensorBoard callback.
-    tensorboard_cb = tf.keras.callbacks.TensorBoard(
-        os.path.join(args.job_dir, 'keras_tensorboard'),
-        histogram_freq=1)
-
-    # Train model
-    keras_model.fit(
-        training_dataset,
-        steps_per_epoch=int(num_train_examples / args.batch_size),
-        epochs=args.num_epochs,
-        validation_data=validation_dataset,
-        validation_steps=1,
-        verbose=1,
-        callbacks=[lr_decay_cb, tensorboard_cb])
-
-    export_path = os.path.join(args.job_dir, 'keras_export')
-    tf.keras.models.save_model(keras_model, export_path)
-    print('Model exported to: {}'.format(export_path))
+    # args.batch_size = np.int64(args.batch_size)
+    # args.learning_rate
+    # args.num_epochs,
 
 
 if __name__ == '__main__':
