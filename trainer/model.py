@@ -65,7 +65,7 @@ class DataGenerator(tf.keras.utils.Sequence):
             iaa.Fliplr(0.5),
             iaa.Affine(rotate=[0,90,180,270]),
         ])
-        img = seq(image=img) / 255 # reduce pixel values to [0,1]
+        img = seq(image=img) # 0 to 255 range
         return img
 
     def __data_generation(self, list_IDs_temp):
@@ -100,15 +100,29 @@ def create_init_model(init_params):
     The model preprocesses input to scale pixel values between -1 and 1. 
     """
     # Unpack parameters
-    input_shape, lr, num_ingrs = init_params['input_shape'], init_params['lr'], init_params['num_ingrs']
+    input_shape, lr, num_ingrs, model_name = init_params['input_shape'], init_params['lr'], init_params['num_ingrs'], init_params['model_name']
 
     # Setup model
-    base_model = tf.keras.applications.MobileNetV2(input_shape=input_shape, include_top=False)
+    if model_name == 'resnet':
+        base = tf.keras.applications.ResNet50
+        preprocess = tf.keras.applications.resnet.preprocess_input # 0 centered
+    elif model_name == 'inception':
+        base = tf.keras.applications.InceptionV3
+        preprocess = tf.keras.applications.inception_v3.preprocess_input # -1 to 1
+    elif model_name == 'densenet':
+        base = tf.keras.applications.DenseNet121
+        preprocess = tf.keras.applications.densenet.preprocess_input # 0 to 1
+    else:
+        print("Invalid model name provided in the params dictionary. \
+            Options are 'resnet', 'inception', 'densenet'.")
+        return
+    
+    base_model = base(input_shape=input_shape, include_top=False)
     base_model.trainable = False
 
     inputs = tf.keras.Input(shape=input_shape)
     x = tf.cast(inputs, tf.float32)
-    x = tf.keras.applications.mobilenet.preprocess_input(x) # scales pixel values 
+    x = preprocess(x) # scales pixel values 
     x = base_model(x, training=False) # keeps batchnorm layers frozen
     x = tf.keras.layers.GlobalAveragePooling2D()(x)
     outputs = tf.keras.layers.Dense(num_ingrs, activation='softmax')(x)
@@ -135,17 +149,19 @@ def create_tl_model(tl_params):
     # Load best stage 1 model weights
     nn = tf.keras.models.load_model(init_path, compile=False)
     init_num_trainable = len(nn.trainable_variables)
-    # nn.summary()
+    print("\nStage 1 model summary (loaded in)")
+    nn.summary()
     
     # Unfreeze last few layers
-    base = nn.layers[1]
+    base = nn.layers[3]
     base.trainable = True
     for layer in base.layers[:-num_unfreeze]:
         layer.trainable = False
 
     tl_num_trainable = len(nn.trainable_variables)
-    print("Number of trainable variables: {} to {}".format(init_num_trainable, tl_num_trainable))
-    # nn.summary()
+    print("\n\nStage 2 model summary (unfrozen)")
+    nn.summary()
+    print("\n\nNumber of trainable variables: {} to {}".format(init_num_trainable, tl_num_trainable))
     
     # Compile model    
     optimizer = tf.keras.optimizers.RMSprop(lr=lr)
