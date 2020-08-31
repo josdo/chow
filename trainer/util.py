@@ -9,11 +9,13 @@ import imgaug.augmenters as iaa
 
 import os
 import sys
+from sys import getsizeof
 import pathlib
 import time
 import lmdb
 import pickle
 from collections import defaultdict
+from tqdm import tqdm
 
 ### Process Raw Labels
 
@@ -39,7 +41,7 @@ def get_valid_ids(img_dir, raw_ds, other_ds=[], subdirect=False):
 
     # Check if directory ids belong to current partition
     print("{} original images".format(len(dir_ids)))
-    valid_dir_ids = [i for i in dir_ids if i in valid_ids]
+    valid_dir_ids = [i for i in tqdm(dir_ids) if i in valid_ids]
     print("{} usable labeled images".format(len(valid_dir_ids)))
 
     # Check if directory ids belong to current partition (for debugging)
@@ -178,31 +180,41 @@ def load_data(dirs, files):
     """
 
     # Specify data directories
-    img_dir_tr, img_dir_val = dirs['imgs_val'], dirs['imgs_test']
-    lmdb_tr_out_path, lmdb_val_out_path = files['val_pkl'], files['test_pkl']
+    img_dir_tr, img_dir_val, img_dir_test = dirs['imgs_train'], dirs['imgs_val'], dirs['imgs_test']
+    lmdb_tr_out_path, lmdb_val_out_path, lmdb_test_out_path = files['train_pkl'], files['val_pkl'], files['test_pkl']
     class_dict_path = files['classes_pkl']
     recipe_vocab_path = files['rvocab_pkl']
 
     # Read in dict of raw labels
-    if not (os.path.isfile(lmdb_tr_out_path) and os.path.isfile(lmdb_val_out_path)):
+    if not (os.path.isfile(lmdb_tr_out_path) and os.path.isfile(lmdb_val_out_path) and os.path.isfile(lmdb_test_out_path)):
         print("Error: one of the LMDB output files does not exist. Try re-reading the LMDBs.")
         return
     
     id2raw_labels_tr = pickle.load(open(lmdb_tr_out_path, 'rb'))
     id2raw_labels_val = pickle.load(open(lmdb_val_out_path, 'rb'))
+    id2raw_labels_test = pickle.load(open(lmdb_test_out_path, 'rb'))
     
-    # TODO: clear subdirect arg, other ds search
-    img_ids_tr = get_valid_ids(img_dir_tr, id2raw_labels_tr, [id2raw_labels_val], subdirect=True)
-    img_ids_val = get_valid_ids(img_dir_val, id2raw_labels_val, [id2raw_labels_tr], subdirect=True)
-
+    # Save valid image ids
+    img_ids_tr = get_valid_ids(img_dir_tr, id2raw_labels_tr)
+    img_ids_val = get_valid_ids(img_dir_val, id2raw_labels_val)
+    img_ids_test = get_valid_ids(img_dir_test, id2raw_labels_test)
+    
+    partition = {
+        'train': img_ids_tr, 
+        'validation': img_ids_val,
+        'test': img_ids_test,
+    }
+    pickle.dump(partition, open(files['pt_pkl'], "wb"))
+    print("Valid image ids dict saved as pkl.")
+    
+    # Store the corresponding raw labels
     raw_labels_tr = np.array([id2raw_labels_tr[i] for i in img_ids_tr])
     raw_labels_val = np.array([id2raw_labels_val[i] for i in img_ids_val])
+    raw_labels_test = np.array([id2raw_labels_test[i] for i in img_ids_test])
     
     # Combine ids and labels from separate partitions
-    img_ids = np.concatenate([img_ids_tr, img_ids_val])
-    raw_labels = np.concatenate([raw_labels_tr, raw_labels_val])
-
-    # TODO: ^^ add test partition + \/ add id2raw_labels_te to id_ds_list
+    img_ids = np.concatenate([img_ids_tr, img_ids_val, img_ids_test])
+    raw_labels = np.concatenate([raw_labels_tr, raw_labels_val, raw_labels_test])
 
     # Separate raw labels by type
     ingr_ids, class_ids, nsteps = raw_labels[:,0], raw_labels[:,1], raw_labels[:,2]
@@ -212,8 +224,9 @@ def load_data(dirs, files):
         imid2clid = pickle.load(f) # image_id to class_id dict
         id2class = pickle.load(f) # class_id to class_name dict
     
-    # One hot encode class ids
-    class_labels = encode_class(class_ids, id2class)
+    # TESTING: don't one hot encode to save memory
+#     # One hot encode class ids
+#     class_labels = encode_class(class_ids, id2class)
     
     # Build ingr id dictionary
     with open(recipe_vocab_path) as f_vocab:
@@ -224,23 +237,28 @@ def load_data(dirs, files):
     invalid_ingr_names = ['Ingredients', '1', '100', '2', '200', '23', '30', '300', \
                           '4', '450', '50', '500', '6', '600']
     invalid_ids = [rvocab2id[n] for n in invalid_ingr_names]
-    id_ds_list = [id2raw_labels_tr, id2raw_labels_val] # TODO: add test ids dict
+    id_ds_list = [id2raw_labels_tr, id2raw_labels_val, id2raw_labels_test]
     unique_ids = find_unique_ingr_ids(id_ds_list, invalid_ids)
     id2ingr, rid2iid = build_ingr_id_dict(unique_ids, id2rvocab)
     print("# unique ingredients:", len(list(id2ingr)))
+    
+    # Save ingr id dictionary
+    pickle.dump(id2ingr, open(files['ingr_pkl'], "wb"))
+    print("Ingredients name dict saved as pkl.")
     
     # One hot encode ingr ids
     ingr_labels = encode_ingrs(ingr_ids, rid2iid)
     
     # Create new labels dictionary
-    labels = dict(zip(img_ids, zip(ingr_labels, class_labels, nsteps)))
-   
-    # Create new image id dictionary
-    partition = {
-        'train': img_ids_tr, 
-        'validation': img_ids_val
-    }
+    ingr_gb = getsizeof(ingr_labels)/(2**30)
+    class_gb = getsizeof(class_ids)/(2**30)
+    nsteps_gb = getsizeof(nsteps)/(2**30)
+    print('Size of Ingr, Class, Nsteps labels: {:.5f} {:.5f} {:.5f} GB'.format(ingr_gb, class_gb, nsteps_gb))
 
+    labels = dict(zip(img_ids, zip(ingr_labels, class_ids, nsteps)))
+    pickle.dump(labels, open(files['lb_pkl'], "wb"))
+    print("Labels dict saved as pkl.")
+    
     return partition, labels, id2ingr
 
 
