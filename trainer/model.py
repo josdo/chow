@@ -65,25 +65,27 @@ class DataGenerator(tf.keras.utils.Sequence):
             iaa.Fliplr(0.5),
             iaa.Affine(rotate=[0,90,180,270]),
         ])
-        img = seq(image=img) # 0 to 255 range
+        img = seq(image=img) / 255 # 0 to 1 range
         return img
 
     def __data_generation(self, list_IDs_temp):
         'Generates data containing batch_size samples' # X : (n_samples, *dim, n_channels)
         # Initialize batch
         X = np.empty((self.batch_size, *self.dim, self.n_channels))
-        y = np.empty((self.batch_size, self.n_ingrs)) # TODO: make dtype=object for 3 labels, but might lose their types
+        y = np.zeros((self.batch_size, self.n_ingrs)) # TODO: make dtype=object for 3 labels, but might lose their types
     
         # Fetch and store batch data
         for i, ID in enumerate(list_IDs_temp):
-            # Image
+            # Augment image
             path = self.image_dir + '/'.join(ID[i] for i in range(4)) + '/' + ID
             img = imageio.imread(path)
             X[i,] = self.__augment_img(img) # TODO: does dim 512, 512 improve performance?
 
-            # Label
-            y[i] = self.labels[ID][0]
-            # Note: column 0 is ingredients, column 1 is class, column 2 is recipe steps
+            # One hot encode label
+            ingr_IDs = self.labels[ID][0] # col 0 is ingr ids, col 1 is class id, col 2 is recipe steps
+            for j in ingr_IDs:
+                y[i][j] = 1
+
             # TODO: when returning more than a single class potential ValueError: failed to convert np 
             # array to tensor (unsupported object type tuple)
 
