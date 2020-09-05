@@ -12,6 +12,8 @@ import imgaug as ia
 import imgaug.augmenters as iaa
 import imageio
 
+import time
+
 class DataGenerator(tf.keras.utils.Sequence):
     """
     Data generator that loads files from disk for model training.
@@ -73,22 +75,35 @@ class DataGenerator(tf.keras.utils.Sequence):
         # Initialize batch
         X = np.empty((self.batch_size, *self.dim, self.n_channels))
         y = np.zeros((self.batch_size, self.n_ingrs)) # TODO: make dtype=object for 3 labels, but might lose their types
-    
+        
+        # TESTING: time I/O
+        fetch_time = 0
+        aug_time = 0
+        encode_time = 0
+        
         # Fetch and store batch data
         for i, ID in enumerate(list_IDs_temp):
             # Augment image
+            start = time.time()
             path = self.image_dir + '/'.join(ID[i] for i in range(4)) + '/' + ID
             img = imageio.imread(path)
-            X[i,] = self.__augment_img(img) # TODO: does dim 512, 512 improve performance?
-
+            fetch_time += time.time() - start
+            
+            start = time.time()
+            X[i,] = self.__augment_img(img)
+            aug_time += time.time() - start
+            
             # One hot encode label
-            ingr_IDs = self.labels[ID][0] # col 0 is ingr ids, col 1 is class id, col 2 is recipe steps
+            start = time.time()
+            ingr_IDs = self.labels[ID][0] # col 0 is ingr ids, col 1 is class id, col 2 is num steps
             for j in ingr_IDs:
                 y[i][j] = 1
-
-            # TODO: when returning more than a single class potential ValueError: failed to convert np 
-            # array to tensor (unsupported object type tuple)
-
+            encode_time += time.time() - start
+            # TODO: when returning more than a single class potential ValueError: 
+            # failed to convert np array to tensor (unsupported object type tuple)
+        
+        total_time = fetch_time + aug_time + encode_time
+        print("Seconds needed to fetch, aug, encode one batch of size {}: {:.2f}, {:.2f}, {:.2f}, TOTAL {:.2f}".format(self.batch_size, fetch_time, aug_time, encode_time, total_time))
         return X, y
 
 def create_init_model(init_params):
